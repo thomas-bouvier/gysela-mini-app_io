@@ -7,7 +7,7 @@ This repository contains mini apps that allow easy coupling with GyselaX++.
 ## Installing
 
 ```bash
-git clone <repository-url>
+git clone git@github.com:gyselax/gysela-mini-app_io.git
 cd gysela-mini-app_io
 git submodule update --init --recursive
 ```
