@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -147,6 +148,36 @@ IdxRangeSpTor3DV2D initialise_mesh(int rank, PC_tree_t conf_gyselax)
             idx_range_tor3,
             idx_range_vpar,
             idx_range_mu);
+}
+
+void update_distribution_fun(
+        DFieldSpGrid allfdistribu,
+        IdxRangeSpTor3DV2D const& mesh,
+        PC_tree_t conf_gyselax)
+{
+    // Read species-specific parameters from YAML
+    double const L_tor2 = PCpp_double(conf_gyselax, ".SplineMesh.Tor2_max")-PCpp_double(conf_gyselax, ".SplineMesh.Tor2_min");
+    double const L_tor3 = PCpp_double(conf_gyselax, ".SplineMesh.Tor3_max")-PCpp_double(conf_gyselax, ".SplineMesh.Tor3_min");
+    double const eps = PCpp_double(conf_gyselax, ".Application.eps");
+    
+    // Read shift values from config (default to 0.0 if not present) and add random values
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dis(-1.0, 1.0);
+
+    double const shift_tor2 = dis(gen);
+    double const shift_tor3 = dis(gen);
+    ddc::parallel_for_each(
+        Kokkos::DefaultExecutionSpace(),
+        mesh,
+        KOKKOS_LAMBDA(IdxSpTor3DV2D const ispgrid) {
+            
+            double const tor2_coord = ddc::coordinate(ddc::select<GridTor2>(ispgrid));
+            double const tor3_coord = ddc::coordinate(ddc::select<GridTor3>(ispgrid));    
+            
+            allfdistribu(ispgrid) *= (1+eps*(cos(2*M_PI*(tor2_coord/L_tor2- shift_tor2))*cos(2*M_PI*(tor3_coord/L_tor3- shift_tor3))));
+        });
+
 }
 
 void init_distribution_fun(
@@ -442,6 +473,7 @@ int main(int argc, char** argv)
     ddc::ScopeGuard ddc_scope(argc, argv);
     MPI_Init(&argc, &argv);
     int rank;
+    int n_iterations=1; // default number of iterations for in-situ diagnostics test
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     steady_clock::time_point time_points[6];
     std::vector<std::string> timing_names(6);
@@ -479,6 +511,10 @@ int main(int argc, char** argv)
         cout << "Performing MPI transpose" << endl;
     } else if (version == "in-situ-diagnostic") {
         cout << "Performing in-situ diagnostic" << endl;
+        n_iterations = PCpp_int(configs.conf_gyselax, ".Application.n_iterations");
+        if (rank == 0) {
+            cout << "Number of iterations: " << n_iterations << endl;
+        }
         /*
         Here is the space for your personal in-situ diagnostic code.
         */
@@ -517,8 +553,25 @@ int main(int argc, char** argv)
         //-----------------------------------------------------------------------
         // Compute fluid moments in Python (density, mean velocity, temperature)
         //-----------------------------------------------------------------------
-        compute_fluid_moments_pycall(rank, local_mesh, global_mesh, allfdistribu_host);
-
+        DFieldMemSpGrid allfdistribu_work(local_mesh);   
+        // Copy the initial distribution to the host (needed for PDI)
+        ddc::parallel_deepcopy(allfdistribu_host, allfdistribu);  // alldistribu_host <--- allfdistribu   
+        for (int i = 0; i < n_iterations; i++) {
+            if (rank == 0) {
+                cout << "Iteration " << i << endl;
+            }
+            // Compute fluid moments in Python (density, mean velocity, temperature) in PDI
+            compute_fluid_moments_pycall(rank, local_mesh, global_mesh, allfdistribu_host);
+            // Create a working copy from the initial distribution
+            ddc::parallel_deepcopy(allfdistribu_work, allfdistribu);  // alldistribu_work <--- allfdistribu
+            // Update the working copy (not the original)
+            if (rank == 0) {
+                cout << "Updating distribution function" << endl;
+            }
+            update_distribution_fun(get_field(allfdistribu_work), local_mesh, configs.conf_gyselax);
+            // Copy the working copy to the host (needed for PDI)
+            ddc::parallel_deepcopy(allfdistribu_host, allfdistribu_work);  // alldistribu_host <--- allfdistribu_work   
+        }
         // ------------------------------------------------------------------------------
     }
     time_points[2] = steady_clock::now();
