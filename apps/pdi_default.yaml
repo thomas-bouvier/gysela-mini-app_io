@@ -25,10 +25,15 @@ types:
     size: &mu_size [ '$mu_extents[0]' ]
 
 metadata:
+  iter_id: int
+
   gysela_io_filename_size: size_t
   gysela_io_filename: {type: array, subtype: char, size: "$gysela_io_filename_size"}
 
   #-- Parallel data
+  fdistribu_starts: { type: array, subtype: size_t, size: 6 }
+  fdistribu_extents: { type: array, subtype: size_t, size: 6 }
+
   local_fdistribu_starts: { type: array, subtype: size_t, size: 6 }
   local_fdistribu_extents: { type: array, subtype: size_t, size: 6 }
 
@@ -97,15 +102,41 @@ metadata:
   density_extents: { type: array, subtype: size_t, size: 4 }
   mean_velocity_extents: { type: array, subtype: size_t, size: 4 }
   temperature_extents: { type: array, subtype: size_t, size: 4 }
+  
+  local_density_starts: { type: array, subtype: size_t, size: 4 }
+  local_density_extents: { type: array, subtype: size_t, size: 4 }
+  local_mean_velocity_starts: { type: array, subtype: size_t, size: 4 }
+  local_mean_velocity_extents: { type: array, subtype: size_t, size: 4 }
+  local_temperature_starts: { type: array, subtype: size_t, size: 4 }
+  local_temperature_extents: { type: array, subtype: size_t, size: 4 }
 
 data:
   #-- Distribution function
   fdistribu_sptor3Dv2D:
     type: array
     subtype: double
+    size: [ '$fdistribu_extents[0]', '$fdistribu_extents[1]', '$fdistribu_extents[2]', '$fdistribu_extents[3]', '$fdistribu_extents[4]', '$fdistribu_extents[5]' ]
+
+  #-- Local distribution function
+  local_fdistribu_sptor3Dv2D:
+    type: array
+    subtype: double
     size: [ '$local_fdistribu_extents[0]', '$local_fdistribu_extents[1]', '$local_fdistribu_extents[2]', '$local_fdistribu_extents[3]', '$local_fdistribu_extents[4]', '$local_fdistribu_extents[5]' ]
 
   #-- Fluid moments (4D: species × tor1 × tor2 × tor3)
+  local_density:
+    type: array
+    subtype: double
+    size: [ '$local_density_extents[0]', '$local_density_extents[1]', '$local_density_extents[2]', '$local_density_extents[3]' ]
+  local_mean_velocity:
+    type: array
+    subtype: double
+    size: [ '$local_mean_velocity_extents[0]', '$local_mean_velocity_extents[1]', '$local_mean_velocity_extents[2]', '$local_mean_velocity_extents[3]' ]
+  local_temperature:
+    type: array
+    subtype: double
+    size: [ '$local_temperature_extents[0]', '$local_temperature_extents[1]', '$local_temperature_extents[2]', '$local_temperature_extents[3]' ]
+
   density:
     type: array
     subtype: double
@@ -126,30 +157,126 @@ plugins:
       Init:
         with: {}
         exec: |
+          import json
+          import time
           import xarray as xr
           import numpy as np
+          from mpi4py import MPI
           from fluid_moments import FluidMoments
-      FluidMoments:
-        with: {fdistribu_raw: $fdistribu_sptor3Dv2D, vpar_vals: $vpar, mu_vals: $mu}
+          from deisa.dask import Bridge, get_connection_info
+
+          comm = MPI.COMM_WORLD
+
+          size = comm.Get_size()
+          rank = comm.Get_rank()
+
+          with open("scheduler.json", "r") as scheduler_file:
+            dask_addr = json.load(scheduler_file)["address"]
+          print(f"[Pycall-{rank}] Dask address {dask_addr}.")
+      InitBridge:
+        with: { density_extents: $density_extents, 
+                mean_velocity_extents: $mean_velocity_extents,
+                temperature_extents: $temperature_extents,
+                local_density_extents: $local_density_extents, 
+                local_mean_velocity_extents: $local_mean_velocity_extents,
+                local_temperature_extents: $local_temperature_extents
+              }
         exec: |
-          fdistribu = xr.DataArray(
-              fdistribu_raw,
+          print(f"[Pycall-{rank}] density extents {density_extents}.")
+          print(f"[Pycall-{rank}] velocity extents {mean_velocity_extents}.")
+          print(f"[Pycall-{rank}] temperature extents {temperature_extents}.")
+
+          print(f"[Pycall-{rank}] local density extents {local_density_extents}.")
+          print(f"[Pycall-{rank}] local velocity extents {local_mean_velocity_extents}.")
+          print(f"[Pycall-{rank}] local temperature extents {local_temperature_extents}.")
+
+          print(f"[Pycall-{rank}] size={size},rank={rank}")
+          arrays_metadata = { 
+                              'density': {
+                                      'size': (int(density_extents[0]),
+                                               int(density_extents[1]),
+                                               int(density_extents[2]),
+                                               int(density_extents[3])),
+                                      'subsize':  ( int(local_density_extents[0]),
+                                                    int(local_density_extents[1]),
+                                                    int(local_density_extents[2]),
+                                                    int(local_density_extents[3])),
+                              },
+                              'velocity': {
+                                      'size': (int(mean_velocity_extents[0]),
+                                               int(mean_velocity_extents[1]),
+                                               int(mean_velocity_extents[2]),
+                                               int(mean_velocity_extents[3])),
+                                      'subsize':  ( int(local_mean_velocity_extents[0]),
+                                                    int(local_mean_velocity_extents[1]),
+                                                    int(local_mean_velocity_extents[2]),
+                                                    int(local_mean_velocity_extents[3])),
+                              },
+                              'temperature': {
+                                      'size': (int(temperature_extents[0]),
+                                               int(temperature_extents[1]),
+                                               int(temperature_extents[2]),
+                                               int(temperature_extents[3])),
+                                      'subsize':  ( int(local_temperature_extents[0]),
+                                                    int(local_temperature_extents[1]),
+                                                    int(local_temperature_extents[2]),
+                                                    int(local_temperature_extents[3])),
+                              },
+          }
+
+          system_metadata = { 'connection': get_connection_info(dask_addr),
+                              'nb_bridges': size
+                            }
+
+          print(f"[Pycall-{rank}] Start bridge connection to{dask_addr}")
+          bridge = Bridge(id=rank,
+                          arrays_metadata=arrays_metadata,
+                          system_metadata=system_metadata)
+          print(f"[Pycall-{rank}] Bridge connected")
+
+      FluidMoments:
+        with: {iter_id: $iter_id, local_fdistribu_raw: $local_fdistribu_sptor3Dv2D, vpar_vals: $vpar, mu_vals: $mu}
+        exec: |
+          print(f"\n[Pycall-{rank}] Iteration {iter_id} ####################")
+
+          local_fdistribu = xr.DataArray(
+              local_fdistribu_raw,
               dims=('species', 'tor1', 'tor2', 'tor3', 'vpar', 'mu')
           )
           vpar = xr.DataArray(vpar_vals, dims=('vpar'))
           mu = xr.DataArray(mu_vals, dims=('mu'))
           fm = FluidMoments(vpar, mu)
 
-          density = fm.compute_density(fdistribu).compute()
-          velocity = fm.compute_velocity(fdistribu, density).compute()
-          temperature = fm.compute_temperature(fdistribu, density, velocity).compute()
+          density = fm.compute_density(local_fdistribu).compute()
+          velocity = fm.compute_velocity(local_fdistribu, density).compute()
+          temperature = fm.compute_temperature(local_fdistribu, density, velocity).compute()
+
+          print(f"[Pycall-{rank}] Shape density {density.shape} .")
+          print(f"[Pycall-{rank}] Shape velocity {velocity.shape} .")
+          print(f"[Pycall-{rank}] Shape temperature {temperature.shape} .")
+
+          print(f"[Pycall-{rank}] Send arrays")
+          bridge.send("density", density.data, int(iter_id))
+          bridge.send("velocity", velocity.data, int(iter_id))
+          bridge.send("temperature", temperature.data, int(iter_id))
+          print(f"[Pycall-{rank}] Arrays sent")
 
           ds_out = xr.Dataset({
               'density': density,
               'velocity': velocity,
               'temperature': temperature,
           })
-          ds_out.to_netcdf('fluid_moments.nc')
+
+          print(f"[Pycall-{rank}] Sum local density {density.sum().data} .")
+          print(f"[Pycall-{rank}] Sum local velocity {velocity.sum().data} .")
+          print(f"[Pycall-{rank}] Sum local temperature {temperature.sum().data} .")
+      End:
+        with: {}
+        exec: |
+          if rank == 0:
+            while not bridge.get("analytics_over"):
+              time.sleep(2)
+          comm.Barrier()
   decl_hdf5:
     #-- Read file names and expose them to PDI
     - file: '${gysela_io_filename}'
@@ -157,7 +284,7 @@ plugins:
       read:
         gysela_io_filename_size: ~
         gysela_io_filename: ~
-    
+
     #-- Read species info
     - file: '${gysela_io_filename}'
       on_event: [read_species]
@@ -222,7 +349,7 @@ plugins:
     - file: '${gysela_io_filename}'
       on_event: [read_fdistribu]
       read:
-        fdistribu_sptor3Dv2D:
+        local_fdistribu_sptor3Dv2D:
             dataset_selection:
               size: [ '$local_fdistribu_extents[0]', '$local_fdistribu_extents[1]', '$local_fdistribu_extents[2]', '$local_fdistribu_extents[3]', '$local_fdistribu_extents[4]', '$local_fdistribu_extents[5]' ]
               start: [ '$local_fdistribu_starts[0]', '$local_fdistribu_starts[1]', '$local_fdistribu_starts[2]', '$local_fdistribu_starts[3]', '$local_fdistribu_starts[4]', '$local_fdistribu_starts[5]' ]
@@ -234,14 +361,14 @@ plugins:
       write:
         timing_names: ~
         timing_values: ~
-        
+
     #-- Write distribution function and coordinates
-    - file: 'fdistribu_5D_output.h5'
+    - file: 'local_fdistribu_5D_output.h5'
       on_event: [write_fdistribu]
       collision_policy: replace_and_warn
       communicator: $MPI_COMM_WORLD
       datasets:
-        fdistribu_sptor3Dv2D:
+        local_fdistribu_sptor3Dv2D:
           type: array
           subtype: double
           size: [ '$species_extents[0]', '$tor1_extents[0]', '$tor2_extents[0]', '$tor3_extents[0]', '$vpar_extents[0]', '$mu_extents[0]' ]
@@ -251,7 +378,7 @@ plugins:
         tor3: ~
         vpar: ~
         mu: ~
-        fdistribu_sptor3Dv2D:
+        local_fdistribu_sptor3Dv2D:
             dataset_selection:
               size: [ '$local_fdistribu_extents[0]', '$local_fdistribu_extents[1]', '$local_fdistribu_extents[2]', '$local_fdistribu_extents[3]', '$local_fdistribu_extents[4]', '$local_fdistribu_extents[5]' ]
               start: [ '$local_fdistribu_starts[0]', '$local_fdistribu_starts[1]', '$local_fdistribu_starts[2]', '$local_fdistribu_starts[3]', '$local_fdistribu_starts[4]', '$local_fdistribu_starts[5]' ]
@@ -260,8 +387,34 @@ plugins:
     - file: 'fluid_moments.h5'
       on_event: [write_fluid_moments]
       collision_policy: replace_and_warn
+      communicator: $MPI_COMM_WORLD
+      datasets:
+        density:
+          type: array
+          subtype: double
+          size: [ '$density_extents[0]', '$density_extents[1]', '$density_extents[2]', '$density_extents[3]' ]
+        mean_velocity:
+          type: array
+          subtype: double
+          size: [ '$mean_velocity_extents[0]', '$mean_velocity_extents[1]', '$mean_velocity_extents[2]', '$mean_velocity_extents[3]' ]
+        temperature:
+          type: array
+          subtype: double
+          size: [ '$temperature_extents[0]', '$temperature_extents[1]', '$temperature_extents[2]', '$temperature_extents[3]' ]
       write:
-        density: ~
-        mean_velocity: ~
-        temperature: ~
+        local_density:
+          dataset: density
+          dataset_selection:
+            size: ['$local_density_extents[0]', '$local_density_extents[1]', '$local_density_extents[2]', '$local_density_extents[3]' ]
+            start: ['$local_density_starts[0]', '$local_density_starts[1]', '$local_density_starts[2]', '$local_density_starts[3]' ]
+        local_mean_velocity:
+          dataset: mean_velocity
+          dataset_selection:
+            size: ['$local_mean_velocity_extents[0]', '$local_mean_velocity_extents[1]', '$local_mean_velocity_extents[2]', '$local_mean_velocity_extents[3]' ]
+            start: ['$local_mean_velocity_starts[0]', '$local_mean_velocity_starts[1]', '$local_mean_velocity_starts[2]', '$local_mean_velocity_starts[3]' ]
+        local_temperature:
+          dataset: temperature
+          dataset_selection:
+            size: ['$local_temperature_extents[0]', '$local_temperature_extents[1]', '$local_temperature_extents[2]', '$local_temperature_extents[3]' ]   
+            start: ['$local_temperature_starts[0]', '$local_temperature_starts[1]', '$local_temperature_starts[2]', '$local_temperature_starts[3]' ]   
 trace: ~

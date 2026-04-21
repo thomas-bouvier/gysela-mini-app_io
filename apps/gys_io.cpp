@@ -153,20 +153,30 @@ IdxRangeSpTor3DV2D initialise_mesh(int rank, PC_tree_t conf_gyselax)
 void update_distribution_fun(
         DFieldSpGrid allfdistribu,
         IdxRangeSpTor3DV2D const& mesh,
-        PC_tree_t conf_gyselax)
+        PC_tree_t conf_gyselax,
+	      MPI_Comm comm)
 {
     // Read species-specific parameters from YAML
     double const L_tor2 = PCpp_double(conf_gyselax, ".SplineMesh.Tor2_max")-PCpp_double(conf_gyselax, ".SplineMesh.Tor2_min");
     double const L_tor3 = PCpp_double(conf_gyselax, ".SplineMesh.Tor3_max")-PCpp_double(conf_gyselax, ".SplineMesh.Tor3_min");
     double const eps = PCpp_double(conf_gyselax, ".Application.eps");
-    
-    // Read shift values from config (default to 0.0 if not present) and add random values
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<double> dis(-1.0, 1.0);
 
-    double const shift_tor2 = dis(gen);
-    double const shift_tor3 = dis(gen);
+    // Read shift values from config (default to 0.0 if not present) and add random values
+    int rank;
+    MPI_Comm_rank(comm, &rank);
+    double shifts[2];
+    if (rank == 0) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<double> dis(-1.0, 1.0);
+        shifts[0] = dis(gen);
+        shifts[1] = dis(gen);
+    }
+    MPI_Bcast(shifts, 2, MPI_DOUBLE, 0, comm);
+    
+    double const shift_tor2 = shifts[0];
+    double const shift_tor3 = shifts[1];
+   
     ddc::parallel_for_each(
         Kokkos::DefaultExecutionSpace(),
         mesh,
@@ -271,7 +281,7 @@ void write_fdistribu(
     expose_mesh_to_pdi("vpar", IdxRange<GridVpar>(global_mesh));
     expose_mesh_to_pdi("mu", IdxRange<GridMu>(global_mesh));
     // Expose distribution function to PDI and trigger write event
-    ddc::PdiEvent("write_fdistribu").with("fdistribu_sptor3Dv2D", allfdistribu_host);
+    ddc::PdiEvent("write_fdistribu").with("local_fdistribu_sptor3Dv2D", allfdistribu_host);
 
     if (rank == 0) {
         cout << "5D distribution function and coordinates written successfully." << endl;
@@ -375,11 +385,11 @@ FluidMomentsData compute_fluid_moments(
 
 void write_fluid_moments(
         int rank,
-        IdxRangeSpTor3DV2D const& mesh,
+        IdxRangeSpTor3DV2D const& local_mesh,
+        IdxRangeSpTor3DV2D const& global_mesh,
         FluidMomentsData const& fluid_moments_data)
 {
     // Create host versions of fluid moments for I/O
-    IdxRangeSpTor3D const idxrange_sptor3d(mesh);
     auto density_host_alloc = ddc::create_mirror_view_and_copy(fluid_moments_data.density);
     auto mean_velocity_host_alloc
             = ddc::create_mirror_view_and_copy(fluid_moments_data.mean_velocity);
@@ -389,28 +399,34 @@ void write_fluid_moments(
     host_t<DFieldSpTor3D> temperature_host = get_field(temperature_host_alloc);
 
     // Expose fluid moments to PDI
+    PDI_expose_idx_range(local_mesh, "local_density");
+    PDI_expose_idx_range(local_mesh, "local_mean_velocity");
+    PDI_expose_idx_range(local_mesh, "local_temperature");
+
+    // Extract index ranges for extents
+    IdxRangeSp const idx_range_sp(global_mesh);
+    IdxRange<GridTor1> const idx_range_tor1(global_mesh);
+    IdxRange<GridTor2> const idx_range_tor2(global_mesh);
+    IdxRange<GridTor3> const idx_range_tor3(global_mesh);
+
+    // Expose global extents for fluid moments
+    std::array<std::size_t, 4> moments_extents_arr
+      = {idx_range_sp.size(),
+       idx_range_tor1.size(),
+       idx_range_tor2.size(),
+       idx_range_tor3.size()};
+    PDI_expose("density_extents", moments_extents_arr.data(), PDI_OUT);
+    PDI_expose("mean_velocity_extents", moments_extents_arr.data(), PDI_OUT);
+    PDI_expose("temperature_extents", moments_extents_arr.data(), PDI_OUT);
+
+    // Expose fluid moments and trigger write event (using DDC helper which handles sharing)
+    ddc::PdiEvent("write_fluid_moments")
+      .with("local_density", density_host)
+      .with("local_mean_velocity", mean_velocity_host)
+      .with("local_temperature", temperature_host);
+    
     if (rank == 0) {
-        // Extract index ranges for extents
-        IdxRangeSp const idx_range_sp(mesh);
-        IdxRange<GridTor1> const idx_range_tor1(mesh);
-        IdxRange<GridTor2> const idx_range_tor2(mesh);
-        IdxRange<GridTor3> const idx_range_tor3(mesh);
-
-        // Expose extents for fluid moments
-        std::array<std::size_t, 4> moments_extents_arr
-                = {idx_range_sp.size(),
-                   idx_range_tor1.size(),
-                   idx_range_tor2.size(),
-                   idx_range_tor3.size()};
-        PDI_expose("density_extents", moments_extents_arr.data(), PDI_OUT);
-        PDI_expose("mean_velocity_extents", moments_extents_arr.data(), PDI_OUT);
-        PDI_expose("temperature_extents", moments_extents_arr.data(), PDI_OUT);
-
-        // Expose fluid moments and trigger write event (using DDC helper which handles sharing)
-        ddc::PdiEvent("write_fluid_moments")
-                .with("density", density_host)
-                .with("mean_velocity", mean_velocity_host)
-                .with("temperature", temperature_host);
+        cout << "Fluid moments written successfully." << endl;
     }
 }
 
@@ -454,7 +470,7 @@ void compute_fluid_moments_pycall(
     expose_mesh_to_pdi("vpar", IdxRange<GridVpar>(global_mesh));
     expose_mesh_to_pdi("mu", IdxRange<GridMu>(global_mesh));
     // Expose distribution function to PDI and trigger Pycall Fluid Moments event
-    ddc::PdiEvent("FluidMoments").with("fdistribu_sptor3Dv2D", allfdistribu_host);
+    ddc::PdiEvent("FluidMoments").with("local_fdistribu_sptor3Dv2D", allfdistribu_host);
 
     if (rank == 0) {
         cout << "Fluid Moments computed in Pycall event." << endl;
@@ -515,6 +531,41 @@ int main(int argc, char** argv)
         if (rank == 0) {
             cout << "Number of iterations: " << n_iterations << endl;
         }
+
+        // Expose index range for parallel I/O
+        PDI_expose_idx_range(local_mesh, "local_fdistribu");
+        PDI_expose_idx_range(global_mesh, "fdistribu");
+        IdxRangeSp const idx_range_sp(global_mesh);
+        IdxRange<GridTor1> const idx_range_tor1(global_mesh);
+        IdxRange<GridTor2> const idx_range_tor2(global_mesh);
+        IdxRange<GridTor3> const idx_range_tor3(global_mesh);
+
+        // Expose global extents for fluid moments
+        std::array<std::size_t, 4> moments_extents_arr
+          = {idx_range_sp.size(),
+             idx_range_tor1.size(),
+             idx_range_tor2.size(),
+             idx_range_tor3.size()};
+        PDI_expose("density_extents", moments_extents_arr.data(), PDI_OUT);
+        PDI_expose("mean_velocity_extents", moments_extents_arr.data(), PDI_OUT);
+        PDI_expose("temperature_extents", moments_extents_arr.data(), PDI_OUT);
+
+        IdxRangeSp const idx_range_sp_local(local_mesh);
+        IdxRange<GridTor1> const idx_range_tor1_local(local_mesh);
+        IdxRange<GridTor2> const idx_range_tor2_local(local_mesh);
+        IdxRange<GridTor3> const idx_range_tor3_local(local_mesh);
+
+        // Expose local extents for fluid moments
+        std::array<std::size_t, 4> moments_extents_arr_local
+          = {idx_range_sp_local.size(),
+             idx_range_tor1_local.size(),
+             idx_range_tor2_local.size(),
+             idx_range_tor3_local.size()};
+        PDI_expose("local_density_extents", moments_extents_arr_local.data(), PDI_OUT);
+        PDI_expose("local_mean_velocity_extents", moments_extents_arr_local.data(), PDI_OUT);
+        PDI_expose("local_temperature_extents", moments_extents_arr_local.data(), PDI_OUT);
+        ddc::PdiEvent("InitBridge");
+
         /*
         Here is the space for your personal in-situ diagnostic code.
         */
@@ -560,17 +611,21 @@ int main(int argc, char** argv)
             if (rank == 0) {
                 cout << "Iteration " << i << endl;
             }
+            PDI_expose("iter_id", &i, PDI_OUT);
+
             // Compute fluid moments in Python (density, mean velocity, temperature) in PDI
             compute_fluid_moments_pycall(rank, local_mesh, global_mesh, allfdistribu_host);
+	    
             // Create a working copy from the initial distribution
-            ddc::parallel_deepcopy(allfdistribu_work, allfdistribu);  // alldistribu_work <--- allfdistribu
+	          //ddc::parallel_deepcopy(allfdistribu_work, allfdistribu_host);  // alldistribu_work <--- allfdistribu_host
+	          ddc::parallel_deepcopy(allfdistribu, allfdistribu_host);  // alldistribu <--- allfdistribu_host
             // Update the working copy (not the original)
             if (rank == 0) {
                 cout << "Updating distribution function" << endl;
             }
-            update_distribution_fun(get_field(allfdistribu_work), local_mesh, configs.conf_gyselax);
+            update_distribution_fun(get_field(allfdistribu_host), local_mesh, configs.conf_gyselax, MPI_COMM_WORLD);
             // Copy the working copy to the host (needed for PDI)
-            ddc::parallel_deepcopy(allfdistribu_host, allfdistribu_work);  // alldistribu_host <--- allfdistribu_work   
+	          // ddc::parallel_deepcopy(allfdistribu_host, allfdistribu_work);  // alldistribu_host <--- allfdistribu_work
         }
         // ------------------------------------------------------------------------------
     }
@@ -591,8 +646,8 @@ int main(int argc, char** argv)
     timing_names[3] = "gpu2cpu";
     //---------------------------------------------------------
     // For I/O, we need global mesh for coordinate extents, but local mesh for data
-    write_fdistribu(rank, local_mesh, global_mesh, allfdistribu_host);
-    write_fluid_moments(rank, local_mesh, fluid_moments);
+    write_fdistribu(rank, local_mesh, global_mesh, allfdistribu);
+    write_fluid_moments(rank, local_mesh, global_mesh, fluid_moments);
     time_points[5] = steady_clock::now();
     timing_names[4] = "write";
     //---------------------------------------------------------
@@ -612,6 +667,9 @@ int main(int argc, char** argv)
         // Use the new function to write timing stats as a table
         write_cpu_time_stats(rank, durations, timing_names, timing_names.size());
     }
+
+    ddc::PdiEvent("End");
+
     PC_tree_destroy(&configs.conf_pdi);
     PC_tree_destroy(&configs.conf_gyselax);
     PDI_finalize();

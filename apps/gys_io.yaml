@@ -4,7 +4,7 @@ FileNames:
 SplineMesh:
   Tor1_ncells: 15      # number of points in the radial direction
   Tor2_ncells: 32      # number of points in the poloidal direction
-  Tor3_ncells: 32      # number of points in the poloidal direction
+  Tor3_ncells: 32     # number of points in the poloidal direction
   Vpar_ncells: 15     # number of points in the parallel velocity direction
   Mu_ncells:   9     # number of points in the adiabatic invariant direction
 
@@ -36,4 +36,4 @@ SpeciesInfo:
 Application: 
   version: "in-situ-diagnostic"  # "mpi_transpose"/"in-situ-diagnostic"
   n_iterations: 10    # number of iterations for in-situ diagnostics test
-  eps: 0.1    # perturbation amplitude for in-situ diagnostics test
+  eps: 1    # perturbation amplitude for in-situ diagnostics test
