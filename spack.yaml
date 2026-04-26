@@ -1,8 +1,9 @@
-spack:
-  concretizer:
-    unify: true
-  definitions:
-  - packages:
+# This is a Spack Environment file.
+  #
+  # It describes a set of packages to be installed, along with
+  # configuration settings.
+  spack:
+    specs:
     - cmake@3.30
     - ginkgo@1.9
     - googletest@1.14 +gmock
@@ -15,12 +16,11 @@ spack:
     - paraconf@1.0
     - pdi@1.10.1:1.10
     - pdiplugin-decl-hdf5@1.10.1:1.10 +mpi
-    - pdiplugin-decl-netcdf@1.10.1:1.10 +mpi
+    #- pdiplugin-decl-netcdf@1.10.1:1.10 +mpi
     - pdiplugin-mpi@1.10.1:1.10
     - pdiplugin-set-value@1.10.1:1.10
     - pdiplugin-trace@1.10.1:1.10
     - pdiplugin-pycall@1.10.1:1.10
-  - python-packages:
     - py-h5py@3.12
     - py-imageio@2.35
     - py-matplotlib@3.9
@@ -32,29 +32,14 @@ spack:
     - py-xarray@2024.7
     - py-bokeh
     - py-deisa-dask
-  specs:
-  - matrix:
-    - [$packages]
-  - matrix:
-    - [$python-packages]
-  repos:
-    patches:
-      git: https://github.com/gyselax/spack.git
-      branch: releases/v2025.11
-    builtin:
-      branch: releases/v2025.11
+    - py-dask-ml@2025.1.0
   view: true
-  mirrors:
-    numpex-spack-mirror:
-      url: oci://ghcr.io/thomas-bouvier/numpex-spack-mirror
-      access_pair:
-        id_variable: REGISTRY_USER
-        secret_variable: REGISTRY_TOKEN
+  concretizer:
+    unify: true
   packages:
     all:
       variants: ~fortran ~mpi ~openmp cxxstd=17
-      target:
-      - x86_64
+      require: target=x86_64
     blas:
       require: openblas@0.3
     lapack:
@@ -62,4 +47,9 @@ spack:
     mpi:
       require: openmpi@5.0
     py-pandas:
-      require: ~performance
+      prefer: ['~performance']
+    py-dask:
+      prefer: ['~dataframe']
+  mirrors:
+    numpex-spack-mirror:
+      url: oci://ghcr.io/thomas-bouvier/numpex-spack-mirror
