@@ -7,6 +7,7 @@ SCHEFILE=scheduler.json
 
 cd ~/gysela-mini-app_io
 
+rm -rf gysela_plots/[dhn]*/*·
 rm -f $SCHEFILE
 
 echo "Launch scheduler"
